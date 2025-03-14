@@ -1,35 +1,326 @@
 ---
-title: "Untitled"
+title: "Baloyi Thabang Bongani Junior Stats Computing A2"
 format: html
 editor: visual
 ---
 
+```{r,include=FALSE}
+if (!requireNamespace("knitr", quietly = TRUE)) {
+  install.packages("knitr")
+}
+
+if (!requireNamespace("MASS", quietly = TRUE)) {
+  install.packages("MASS")
+}
+if (!requireNamespace("doParallel", quietly = TRUE)) {
+  install.packages("doParallel")
+}
+
+if (!requireNamespace("iterators", quietly = TRUE)) {
+  install.packages("iterators")
+}
+if (!requireNamespace("foreach", quietly = TRUE)) {
+  install.packages("foreach")
+}
+
+library(iterators)
+library(MASS)       
+library(doParallel)
+library(foreach)
+library(knitr)
+
+```
+
 ## Question 1
 
 ```{r}
+# Repeat 100 times, combining results row-wise:
+results <- foreach(i = 1:100, .combine = rbind) %do% {
+  # Generate the sample:
+  x <- rexp(n = 100, rate = 1)   # Exponential with mean = 1/rate
+  
+  # Return mean and variance:
+  c(mean = mean(x), variance = var(x))
+}
 
+# Convert to data frame and fix the row names:
+results_df <- as.data.frame(results)
+row.names(results_df) <- paste("Sample", 1:100)
+
+# Use knitr::kable to display:
+kable(results_df, col.names = c("Mean", "Variance"))
 ```
 
 ## Question 2
 
 ```{r}
+# Load galaxies data
+data("galaxies")    # speeds of 82 galaxies, from the MASS package
 
+# Number of bootstrap samples
+n_boot <- 1000
+
+# Number of cores to use (example: use half your available cores)
+num_cores <- parallel::detectCores() %/% 2
+
+# ------------------------------------
+# Serial bootstrap for comparison
+# ------------------------------------
+serial_time <- system.time({
+  serial_medians <- numeric(n_boot)
+  for (i in seq_len(n_boot)) {
+    # Resample galaxies (with replacement)
+    sample_data <- sample(galaxies, length(galaxies), replace = TRUE)
+    # Compute median
+    serial_medians[i] <- median(sample_data)
+  }
+})
+
+# ---------------------------------------------------
+# 3. Parallel bootstrap using doParallel and foreach
+# ---------------------------------------------------
+
+# Create and register cluster
+cl <- makeCluster(num_cores)
+registerDoParallel(cl)
+
+parallel_time <- system.time({
+  parallel_medians <- foreach(
+    i = 1:n_boot,
+    .combine = c,       # combine results into a vector
+    .packages = "MASS"  # not strictly needed here, but recommended if using MASS data/functions
+  ) %dopar% {
+    # Resample galaxies (with replacement)
+    sample_data <- sample(galaxies, length(galaxies), replace = TRUE)
+    # Compute median
+    median(sample_data)
+  }
+})
+
+# Stop the cluster
+stopCluster(cl)
+
+# -----------------------------
+# Compare results and times
+# -----------------------------
+
+# Summaries of medians
+serial_summary   <- summary(serial_medians)
+parallel_summary <- summary(parallel_medians)
+
+# Display the first few medians in a neat table
+# Convert numeric vectors to data frames so kable can label columns
+df_serial   <- data.frame(Iteration = 1:n_boot, Median = serial_medians)
+df_parallel <- data.frame(Iteration = 1:n_boot, Median = parallel_medians)
+
+kable(head(df_serial), caption = "First 6 serial medians")
+
+kable(head(df_parallel), caption = "First 6 parallel medians")
+
+# Summaries in a single table
+compare_df <- data.frame(
+  Method  = c("Serial", "Parallel"),
+  Min     = c(min(serial_medians), min(parallel_medians)),
+  `1stQ`  = c(serial_summary[2], parallel_summary[2]),
+  Median  = c(serial_summary[3], parallel_summary[3]),
+  Mean    = c(serial_summary[4], parallel_summary[4]),
+  `3rdQ`  = c(serial_summary[5], parallel_summary[5]),
+  Max     = c(max(serial_medians), max(parallel_medians))
+)
+
+kable(compare_df, caption = "Comparing serial vs. parallel bootstrap medians")
+
+# Compare computation times
+time_df <- data.frame(
+  Method = c("Serial", "Parallel"),
+  ElapsedSeconds = c(serial_time["elapsed"], parallel_time["elapsed"])
+)
+
+kable(time_df, caption = "Serial vs. Parallel Computation Times (seconds)")
 ```
 
 ## Question 3
 
 ```{r}
+# ------------------------------
+# Set simulation parameters
+# ------------------------------
 
+n_sims <- 2000    # number of simulation replications
+n <- 50           # sample size
+boot_sims <- 1000 # number of bootstrap resamples per replication
+alpha <- 0.05     # for a 95% CI
+
+# Number of cores to use in parallel
+num_cores <- parallel::detectCores() %/% 2
+
+# ---------------------------------------------------
+# Parallel loop with foreach to estimate coverage
+# ---------------------------------------------------
+
+cl <- makeCluster(num_cores)
+registerDoParallel(cl)
+
+# 'coverage_results' will be a vector of 0/1 indicating whether each CI covered 1
+coverage_results <- foreach(i = 1:n_sims, .combine = c) %dopar% {
+  # Generate one sample of size n from Exp(1)
+  x <- rexp(n, rate = 1)
+  
+  # Bootstrap means
+  boot_means <- replicate(boot_sims, {
+    x_star <- sample(x, n, replace = TRUE)
+    mean(x_star)
+  })
+  
+  # Percentile CI (95%)
+  ci <- quantile(boot_means, probs = c(alpha / 2, 1 - alpha / 2))
+  
+  # Check if true mean (1) is inside the CI
+  as.numeric(ci[1] <= 1 && ci[2] >= 1)
+}
+
+stopCluster(cl)
+
+# ----------------------------------
+# Summarize and display results
+# ----------------------------------
+
+coverage_estimate <- mean(coverage_results)
+
+# Show in a neat table
+kable(
+  data.frame(Coverage = coverage_estimate),
+  caption = "Estimated coverage of the 95% percentile bootstrap CI for an Exp(1) mean."
+)
 ```
 
 ## Question 4
 
 ```{r}
+set.seed(1234)
+
+inorm <- function(n_iter, n_each, mean = 0, sd = 1) {
+  i <- 0
+  nextEl <- function() {
+    if (i >= n_iter) stop("StopIteration")
+    i <<- i + 1
+    rnorm(n_each, mean, sd)
+  }
+  it <- list(nextElem = nextEl)
+  class(it) <- c("abstractiter", "iter")
+  it
+}
+
+largest_values <- foreach(vec = inorm(3, 5), .combine = c) %do% {
+  max(vec)
+}
+
+results_df <- data.frame(
+  Iteration = 1:length(largest_values),
+  LargestValue = largest_values
+)
+
+kable(results_df, caption = "Largest values from each of the 3 vectors")
 
 ```
 
 ## Question 5
 
 ```{r}
+
+# ------------------------------------------------
+# 2. Define a Small Helper Function
+# ------------------------------------------------
+# This function takes the data and returns the median of a bootstrap sample
+bootstrap_median <- function(data) {
+  sample_data <- sample(data, length(data), replace = TRUE)
+  median(sample_data)
+}
+
+# ------------------------------------------------
+# 3. Set Up Simulation/Bootstrap Parameters
+# ------------------------------------------------
+n_boot <- 2000              # Number of bootstrap iterations
+num_cores <- parallel::detectCores() %/% 2  # Use half the available cores
+
+# ------------------------------------------------
+# 4. Serial Approach Using replicate()
+# ------------------------------------------------
+serial_time <- system.time({
+  serial_medians <- replicate(n_boot, bootstrap_median(galaxies))
+})
+
+# ------------------------------------------------
+# 5. Parallel Approach Using parLapply()
+# ------------------------------------------------
+cl <- parallel::makeCluster(num_cores)
+# Export needed objects/functions to the cluster
+parallel::clusterExport(
+  cl,
+  varlist = c("bootstrap_median", "galaxies"),
+  envir = environment()
+)
+
+parLapply_time <- system.time({
+  parLapply_medians <- parallel::parLapply(cl, 1:n_boot, function(i) {
+    bootstrap_median(galaxies)
+  })
+})
+
+# Stop the cluster
+parallel::stopCluster(cl)
+
+# ------------------------------------------------
+# 6. Parallel Approach Using foreach %dopar%
+# ------------------------------------------------
+cl <- parallel::makeCluster(num_cores)
+registerDoParallel(cl)
+
+foreach_time <- system.time({
+  foreach_medians <- foreach(i = 1:n_boot, .combine = c) %dopar% {
+    bootstrap_median(galaxies)
+  }
+})
+
+# Stop the cluster
+stopCluster(cl)
+
+# ------------------------------------------------
+# 7. Compare Results and Times
+# ------------------------------------------------
+
+# A) Check if the results are consistent
+serial_summary    <- summary(serial_medians)
+parLapply_summary <- summary(unlist(parLapply_medians))
+foreach_summary   <- summary(foreach_medians)
+
+# Create a summary table for the bootstrap medians
+summary_df <- data.frame(
+  Method = c("replicate (serial)", "parLapply", "foreach"),
+  Min    = c(serial_summary[1], parLapply_summary[1], foreach_summary[1]),
+  Q1     = c(serial_summary[2], parLapply_summary[2], foreach_summary[2]),
+  Median = c(serial_summary[3], parLapply_summary[3], foreach_summary[3]),
+  Mean   = c(serial_summary[4], parLapply_summary[4], foreach_summary[4]),
+  Q3     = c(serial_summary[5], parLapply_summary[5], foreach_summary[5]),
+  Max    = c(serial_summary[6], parLapply_summary[6], foreach_summary[6])
+)
+
+# B) Compare the elapsed times
+time_df <- data.frame(
+  Method          = c("replicate (serial)", "parLapply", "foreach"),
+  Elapsed_Seconds = c(serial_time["elapsed"],
+                      parLapply_time["elapsed"],
+                      foreach_time["elapsed"])
+)
+
+# ------------------------------------------------
+# 8. Display Tables Using knitr::kable
+# ------------------------------------------------
+
+
+kable(
+  time_df,
+  caption = "Comparison of run times among replicate, parLapply, and foreach"
+)
 
 ```
